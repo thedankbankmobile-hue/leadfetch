@@ -1,16 +1,16 @@
 name: DBPR HVAC Scraper Pipeline
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Allows manual trigger via the GitHub Actions tab
   schedule:
-    - cron: '0 12 1 * *'
+    - cron: '0 12 1 * *' # Auto-runs at 12:00 PM UTC on the 1st of every month
 
 jobs:
   run-dbpr-scraper:
     runs-on: ubuntu-latest
     
     permissions:
-      contents: write
+      contents: write # Enables pushing updated CSV commits back to the repo
 
     steps:
       - name: Checkout repository code
@@ -28,17 +28,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run DBPR scraper script
+      - name: Step 1 - Fetch Base Contractor List
         run: python scraper.py
 
-      - name: Commit and push generated CSV
+      - name: Step 2 - Enrich Contractor List with Emails
+        run: python enrich_emails.py
+
+      - name: Commit and push updated CSV
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
           if [ -f hillsborough_hvac_contractors.csv ]; then
             git add hillsborough_hvac_contractors.csv
-            git diff --staged --quiet || (git commit -m "Automated update of contractor CSV data" && git push)
+            git diff --staged --quiet || (git commit -m "Automated update of contractor CSV data with emails" && git push)
           else
             echo "CSV file missing. Skipping commit."
           fi
