@@ -1,12 +1,12 @@
-name: Run DBPR HVAC Scraper
+name: Run Sunbiz Tree Service Scraper
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 6 * * 1' # Runs every Monday morning
+    - cron: '0 6 * * 1' # Runs every Monday at 6:00 AM UTC
 
 jobs:
-  scrape-dbpr:
+  scrape-sunbiz:
     runs-on: ubuntu-latest
 
     steps:
@@ -23,12 +23,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install curl_cffi
 
-      - name: Run Scraper Script
-        run: python scraper.py
+      - name: Run Sunbiz Scraper
+        run: python sunbiz_scraper.py
 
-      - name: Commit and Push CSV
+      - name: Commit and Push Results
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add hillsborough_hvac_contractors.csv
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update Hillsborough HVAC dataset" && git push)
+          git add hillsborough_tree_services_sunbiz.csv
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update Hillsborough Tree Services Sunbiz list" && git push)
