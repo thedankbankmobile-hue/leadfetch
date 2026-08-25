@@ -1,87 +1,115 @@
 import csv
 import io
+import re
 import sys
+import zipfile
 from curl_cffi import requests
 
-# DBPR Construction Board Extract URL
-DBPR_URL = "https://www2.myfloridalicense.com/sto/file_download/extracts/liccon.csv"
+# Florida DOS / Sunbiz Public SFTP Web Portal Endpoint
+SUNBIZ_PORTAL_URL = "https://sftp.floridados.gov"
+# Standard public credentials provided by FL DOS
+SUNBIZ_USER = "Public"
+SUNBIZ_PASS = "PubAccess1845!"
 
-def run_scraper():
-    print("Initiating DBPR download via impersonated TLS...")
+# Hillsborough County Cities & Top Target Keywords
+HILLSBOROUGH_CITIES = [
+    "TAMPA", "BRANDON", "PLANT CITY", "RIVERVIEW", 
+    "TEMPLE TERRACE", "VALRICO", "RUSKIN", "APOLLO BEACH", "SEFFNER"
+]
+
+TARGET_KEYWORDS = ["TREE", "ARBOR", "TIMBER", "LANDCLEARING", "LOGGING"]
+
+def fetch_sunbiz_data():
+    print("Connecting to Sunbiz Public Data Portal...")
+    session = requests.Session()
+    
+    # 1. Direct file link for active corporate entity data extract
+    # Alternate direct HTTP stream path hosted by DOS for public automated dumps:
+    direct_file_url = "https://sftp.floridados.gov/Quarterly/corp_active.zip"
     
     try:
-        # DBPR server requires browser impersonation to pass Cloudflare TLS checks
-        response = requests.get(DBPR_URL, impersonate="chrome120", timeout=120)
-        print(f"Server response code: {response.status_code}")
+        response = session.get(
+            direct_file_url, 
+            auth=(SUNBIZ_USER, SUNBIZ_PASS), 
+            stream=True, 
+            timeout=120
+        )
         
         if response.status_code != 200:
-            print(f"Error: DBPR endpoint returned status {response.status_code}")
-            sys.exit(1)
-
+            # Fallback to daily incremental file if quarterly zip is undergoing maintenance
+            print("Quarterly archive unavailable, trying daily active batch...")
+            direct_file_url = "https://sftp.floridados.gov/Daily/cordata.zip"
+            response = session.get(direct_file_url, auth=(SUNBIZ_USER, SUNBIZ_PASS), stream=True, timeout=120)
+            
+        print(f"Download stream established. Status code: {response.status_code}")
+        return response.content
     except Exception as e:
-        print(f"Network request failed: {e}")
+        print(f"Failed to retrieve file from Sunbiz: {e}")
         sys.exit(1)
 
-    # DBPR files use CP1252/Latin-1 encoding, NOT UTF-8
-    try:
-        content = response.content.decode('latin-1', errors='replace')
-    except Exception as e:
-        print(f"Decoding failed: {e}")
-        sys.exit(1)
-
-    reader = csv.reader(io.StringIO(content))
+def parse_and_filter_sunbiz(zip_bytes):
+    print("Unpacking data archive in memory...")
     results = []
-
-    print("Processing CSV data...")
     
-    for row_idx, row in enumerate(reader):
-        if not row or len(row) < 5:
-            continue
-            
-        # Convert all fields to upper string for search checks
-        row_str = " ".join([str(cell).upper() for cell in row])
-        
-        # Hillsborough County checks: County code '39', '039', or text 'HILLSBOROUGH'
-        in_hillsborough = ("39" in row) or ("039" in row) or ("HILLSBOROUGH" in row_str)
-        
-        # HVAC checks: Ranks CAC, RAC, or text match
-        is_hvac = any(keyword in row_str for keyword in ["CAC", "RAC", "AIR CONDITIONING", "AIR COND"])
-        
-        if in_hillsborough and is_hvac:
-            # Safe extraction with fallback indices
-            firm_name = row[3].strip() if len(row) > 3 and row[3].strip() else (row[2].strip() if len(row) > 2 else "N/A")
-            lic_num = row[12].strip() if len(row) > 12 else "N/A"
-            phone = row[14].strip() if len(row) > 14 and row[14].strip() else "N/A"
-            
-            # Find email by scanning row for '@' symbol dynamically
-            email = "N/A"
-            for cell in row:
-                if "@" in cell and "." in cell:
-                    email = cell.strip()
-                    break
-
-            results.append({
-                "Firm/Name": firm_name,
-                "License Number": lic_num,
-                "Phone": phone,
-                "Email": email
-            })
-
-    print(f"Extraction complete. Matches found: {len(results)}")
-
-    # Write output file safely
-    output_filename = "hillsborough_hvac_contractors.csv"
-    fieldnames = ["Firm/Name", "License Number", "Phone", "Email"]
-
     try:
-        with open(output_filename, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(results)
-        print(f"Successfully saved {len(results)} records to {output_filename}")
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+            for filename in z.namelist():
+                print(f"Parsing raw text file: {filename}")
+                with z.open(filename) as f:
+                    # Sunbiz data files use CP1252/Latin-1 encoding
+                    for line_bytes in f:
+                        line = line_bytes.decode('latin-1', errors='replace')
+                        line_upper = line.upper()
+                        
+                        # Step 1: Fast string scan for Tree keywords
+                        if not any(kw in line_upper for kw in TARGET_KEYWORDS):
+                            continue
+                            
+                        # Step 2: Ensure location matches Hillsborough County cities
+                        if not any(city in line_upper for city in HILLSBOROUGH_CITIES):
+                            continue
+                        
+                        # Extract email using pattern match on the fixed record line
+                        email_match = re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', line)
+                        email = email_match.group(0) if email_match else "N/A"
+                        
+                        # Sunbiz Fixed-Width Standard Layout Parsing:
+                        # Document ID: [0:12], Entity Name: [12:192], Status: [192:198]
+                        doc_num = line[0:12].strip()
+                        entity_name = line[12:192].strip() if len(line) >= 192 else line[12:].strip()
+                        
+                        # Extract city/zip context from tail of record line
+                        city_found = next((city for city in HILLSBOROUGH_CITIES if city in line_upper), "HILLSBOROUGH")
+                        
+                        results.append({
+                            "Document Number": doc_num,
+                            "Business Name": entity_name,
+                            "City": city_found,
+                            "Email": email,
+                            "Raw Record": line[:250].strip() # Backup preview of address fields
+                        })
+                        
     except Exception as e:
-        print(f"Failed writing CSV file: {e}")
+        print(f"Error parsing Sunbiz zip extract: {e}")
         sys.exit(1)
+        
+    return results
+
+def main():
+    zip_bytes = fetch_sunbiz_data()
+    leads = parse_and_filter_sunbiz(zip_bytes)
+    
+    print(f"\nProcessing finished. Found {len(leads)} matching tree service businesses in Hillsborough.")
+    
+    output_filename = "hillsborough_tree_services_sunbiz.csv"
+    fieldnames = ["Document Number", "Business Name", "City", "Email", "Raw Record"]
+    
+    with open(output_filename, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(leads)
+        
+    print(f"Saved results to {output_filename}")
 
 if __name__ == "__main__":
-    run_scraper()
+    main()
