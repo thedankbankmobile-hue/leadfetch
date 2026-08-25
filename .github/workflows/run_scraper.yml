@@ -1,25 +1,25 @@
 name: DBPR HVAC Scraper Pipeline
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Allows manual trigger via the GitHub Actions tab
   schedule:
-    - cron: '0 12 1 * *'
+    - cron: '0 12 1 * *' # Auto-runs at 12:00 PM UTC on the 1st of every month
 
 jobs:
   run-dbpr-scraper:
     runs-on: ubuntu-latest
     
     permissions:
-      contents: write # Essential for pushing commits
+      contents: write # Enables pushing generated CSV commits back to the repo
 
     steps:
       - name: Checkout repository code
-        uses: actions/checkout@v4.2.2 # Fixed version to resolve deprecation warning
+        uses: actions/checkout@v4.2.2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }} # Explicitly pass checkout authentication token
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python environment
-        uses: actions/setup-python@v6 # Updated to v6 to clear Node.js runtime warning
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -35,5 +35,10 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add hillsborough_hvac_contractors.csv
-          git diff --staged --quiet || (git commit -m "Automated update of DBPR contractor CSV data" && git push)
+          
+          if [ -f hillsborough_hvac_contractors.csv ]; then
+            git add hillsborough_hvac_contractors.csv
+            git diff --staged --quiet || (git commit -m "Automated update of DBPR contractor CSV data" && git push)
+          else
+            echo "CSV file was not created by the scraper. Skipping commit."
+          fi
