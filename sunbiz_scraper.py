@@ -5,10 +5,10 @@ import sys
 import zipfile
 from curl_cffi import requests
 
-# Florida DOS / Sunbiz Public Data Endpoints
+# Updated exact paths per Florida DOS specifications
 SUNBIZ_ZIP_URLS = [
-    "https://sftp.floridados.gov/Quarterly/corp_active.zip",
-    "https://sftp.floridados.gov/Daily/cordata.zip"
+    "https://sftp.floridados.gov/doc/quarterly/cor/cordata.zip",
+    "https://sftp.floridados.gov/doc/quarterly/fic/ficdata.zip"
 ]
 
 SUNBIZ_USER = "Public"
@@ -28,11 +28,12 @@ def fetch_sunbiz_data():
     for url in SUNBIZ_ZIP_URLS:
         try:
             print(f"Attempting download from: {url}")
+            # Sunbiz requires Basic Authentication with public credentials
             response = session.get(
                 url, 
                 auth=(SUNBIZ_USER, SUNBIZ_PASS), 
                 stream=True, 
-                timeout=180
+                timeout=300
             )
             
             if response.status_code == 200 and len(response.content) > 1000:
@@ -53,17 +54,17 @@ def parse_and_filter_sunbiz(zip_bytes):
     try:
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
             for filename in z.namelist():
-                print(f"Parsing raw file: {filename}")
+                print(f"Parsing raw file inside zip: {filename}")
                 with z.open(filename) as f:
                     for line_bytes in f:
                         line = line_bytes.decode('latin-1', errors='replace')
                         line_upper = line.upper()
                         
-                        # 1. Filter by Tree/Arbor keywords
+                        # Filter by target keywords
                         if not any(kw in line_upper for kw in TARGET_KEYWORDS):
                             continue
                             
-                        # 2. Filter by Hillsborough County cities
+                        # Filter by target cities
                         if not any(city in line_upper for city in HILLSBOROUGH_CITIES):
                             continue
                         
@@ -93,7 +94,7 @@ def main():
     zip_bytes = fetch_sunbiz_data()
     leads = parse_and_filter_sunbiz(zip_bytes)
     
-    print(f"\nProcessing finished. Found {len(leads)} matching tree service businesses in Hillsborough.")
+    print(f"\nProcessing finished. Found {len(leads)} matching businesses.")
     
     output_filename = "hillsborough_tree_services_sunbiz.csv"
     fieldnames = ["Document Number", "Business Name", "City", "Email", "Raw Record"]
