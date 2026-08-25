@@ -1,1 +1,34 @@
+name: Run Sunbiz Carpentry Service Scraper
 
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1' # Runs every Monday at 6:00 AM UTC
+
+jobs:
+  scrape-hvac:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install curl_cffi beautifulsoup4
+
+      - name: Run caprentry Scraper
+        run: python carpentry_scraper.py
+
+      - name: Commit and Push Results
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add hillsborough_hvac_services_sunbiz.csv
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update Hillsborough carpentry Services Sunbiz list" && git push)
