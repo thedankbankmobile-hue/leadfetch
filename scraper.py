@@ -1,119 +1,67 @@
 import csv
+import io
 import requests
 
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+# Official Florida DBPR Construction License Extract Endpoint
+DBPR_URL = "https://www2.myfloridalicense.com/sto/file_download/extracts/liccon.csv"
 
-# Overpass QL query: Find HVAC & climate control contractors in Hillsborough County, FL
-OVERPASS_QUERY = """
-[out:json][timeout:30];
-area["name"="Hillsborough County"]["state"="Florida"]->.boundaryarea;
-(
-  node["craft"="hvac"](area.boundaryarea);
-  way["craft"="hvac"](area.boundaryarea);
-  relation["craft"="hvac"](area.boundaryarea);
-  node["trade"="hvac"](area.boundaryarea);
-  way["trade"="hvac"](area.boundaryarea);
-  relation["trade"="hvac"](area.boundaryarea);
-  node["shop"="hvac"](area.boundaryarea);
-  way["shop"="hvac"](area.boundaryarea);
-  relation["shop"="hvac"](area.boundaryarea);
-  node["office"="hvac"](area.boundaryarea);
-  way["office"="hvac"](area.boundaryarea);
-  relation["office"="hvac"](area.boundaryarea);
-);
-out tags;
-"""
-
-def fetch_hvac_contractors():
-    print("Fetching HVAC contractor records from Overpass API...")
+def run_scraper():
+    print("Initiating DBPR Data Download...")
     headers = {
-        "User-Agent": "GitHubActions-HVACScraper/1.0"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
-    
-    try:
-        response = requests.post(OVERPASS_URL, data={"data": OVERPASS_QUERY}, headers=headers, timeout=45)
-        response.raise_for_status()
-        data = response.json()
-    except Exception as e:
-        print(f"Error requesting contractor data: {e}")
-        return []
 
-    elements = data.get("elements", [])
-    print(f"Retrieved {len(elements)} raw elements from API query.")
-    
     results = []
-    seen_names = set()
 
-    for elem in elements:
-        tags = elem.get("tags", {})
-        name = tags.get("name") or tags.get("operator") or tags.get("brand")
+    try:
+        response = requests.get(DBPR_URL, headers=headers, timeout=30)
+        print(f"DBPR Response Status Code: {response.status_code}")
         
-        if not name or name in seen_names:
-            continue
-        
-        seen_names.add(name)
-        phone = tags.get("phone") or tags.get("contact:phone") or "N/A"
-        email = tags.get("email") or tags.get("contact:email") or "N/A"
-        website = tags.get("website") or tags.get("contact:website") or "N/A"
+        if response.status_code == 200:
+            content = response.content.decode('utf-8', errors='ignore')
+            reader = csv.reader(io.StringIO(content))
+            
+            for row in reader:
+                if len(row) < 14:
+                    continue
+                
+                rank = row[1].strip().upper() if len(row) > 1 else ""
+                county = row[9].strip() if len(row) > 9 else ""
+                
+                # Filter for HVAC (CAC/RAC) in Hillsborough County (County Code 39)
+                if ("CAC" in rank or "RAC" in rank or "AIR" in rank) and county == "39":
+                    results.append({
+                        "Firm/Name": row[3].strip() if len(row) > 3 and row[3].strip() else (row[2].strip() if len(row) > 2 else "N/A"),
+                        "License Number": row[12].strip() if len(row) > 12 else "N/A",
+                        "Phone": row[14].strip() if len(row) > 14 and row[14].strip() else "N/A",
+                        "Email": row[15].strip() if len(row) > 15 and "@" in row[15] else "N/A"
+                    })
+            print(f"Successfully processed {len(results)} contractor entries.")
+        else:
+            print(f"Warning: Received HTTP {response.status_code} from DBPR server.")
 
-        # Construct basic address from tags if available
-        street = tags.get("addr:housenumber", "") + " " + tags.get("addr:street", "")
-        city = tags.get("addr:city", "Hillsborough County")
-        address = f"{street.strip()}, {city}, FL".strip(", ")
+    except Exception as e:
+        print(f"Execution Error during fetch: {e}")
 
+    # Fallback mock row to verify file creation if API is blocked by DBPR firewall
+    if not results:
+        print("Adding diagnostic entry to verify GitHub workflow tracking...")
         results.append({
-            "Firm/Name": name,
-            "Phone": phone,
-            "Email": email,
-            "Address": address,
-            "Website": website
+            "Firm/Name": "DBPR Direct Connection Blocked (Check Action Logs)",
+            "License Number": "N/A",
+            "Phone": "N/A",
+            "Email": "N/A"
         })
 
-    # If OSM contains limited direct entries, fall back to general Tampa Bay climate services
-    if not results:
-        print("Executing fallback query for wider Hillsborough business coverage...")
-        fallback_query = """
-        [out:json][timeout:30];
-        area["name"="Hillsborough County"]["state"="Florida"]->.searchArea;
-        (
-          node["name"~"Air|HVAC|Heating|Cooling|AC", i](area.searchArea);
-          way["name"~"Air|HVAC|Heating|Cooling|AC", i](area.searchArea);
-        );
-        out tags;
-        """
-        try:
-            fb_res = requests.post(OVERPASS_URL, data={"data": fallback_query}, headers=headers, timeout=45)
-            fb_data = fb_res.json()
-            for elem in fb_data.get("elements", []):
-                tags = elem.get("tags", {})
-                name = tags.get("name")
-                if name and name not in seen_names:
-                    seen_names.add(name)
-                    results.append({
-                        "Firm/Name": name,
-                        "Phone": tags.get("phone") or tags.get("contact:phone") or "N/A",
-                        "Email": tags.get("email") or tags.get("contact:email") or "N/A",
-                        "Address": tags.get("addr:city", "Hillsborough County") + ", FL",
-                        "Website": tags.get("website") or tags.get("contact:website") or "N/A"
-                    })
-        except Exception as err:
-            print(f"Fallback query error: {err}")
-
-    print(f"Successfully processed {len(results)} contractor entries.")
-    return results
+    save_to_csv(results)
 
 def save_to_csv(data, filename="hillsborough_hvac_contractors.csv"):
-    keys = ["Firm/Name", "Phone", "Email", "Address", "Website"]
-    
-    # Force file creation on disk so git add step always finds the file
+    keys = ["Firm/Name", "License Number", "Phone", "Email"]
     with open(filename, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=keys)
         writer.writeheader()
-        if data:
-            writer.writerows(data)
-            
-    print(f"Saved {len(data)} records to {filename}")
+        writer.writerows(data)
+    print(f"Saved output file: {filename}")
 
 if __name__ == "__main__":
-    contractors = fetch_hvac_contractors()
-    save_to_csv(contractors)
+    run_scraper()
