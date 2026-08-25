@@ -1,41 +1,33 @@
-name: DBPR HVAC Scraper Pipeline
+name: Run DBPR Scraper
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 12 1 * *'
+    - cron: '0 0 * * 1'
 
 jobs:
-  run-dbpr-scraper:
+  scrape:
     runs-on: ubuntu-latest
-    
-    permissions:
-      contents: write
-
     steps:
-      - name: Checkout repository code
-        uses: actions/checkout@v4.2.2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-      - name: Set up Python environment
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install seleniumbase
 
-      - name: Run DBPR Scraper
+      - name: Run Stealth Scraper
         run: python scraper.py
 
-      - name: Force Commit and Push CSV
+      - name: Commit Updated CSV
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          git add -A
-          git commit -m "Automated update of DBPR contractor CSV data [skip ci]" || echo "No changes to commit"
-          git push origin main || git push
+          git add hillsborough_hvac_contractors.csv
+          git commit -m "Update HVAC contractor dataset" || exit 0
+          git push
