@@ -1,23 +1,25 @@
 name: DBPR HVAC Scraper Pipeline
 
 on:
-  workflow_dispatch: # Allows manual trigger via the GitHub Actions UI tab
+  workflow_dispatch:
   schedule:
-    - cron: '0 12 1 * *' # Optional: Auto-runs at 12:00 PM UTC on the 1st of every month
+    - cron: '0 12 1 * *'
 
 jobs:
   run-dbpr-scraper:
     runs-on: ubuntu-latest
     
     permissions:
-      contents: write # Grants permissions to commit files back to the repo
+      contents: write # Essential for pushing commits
 
     steps:
       - name: Checkout repository code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2 # Fixed version to resolve deprecation warning
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }} # Explicitly pass checkout authentication token
 
       - name: Set up Python environment
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6 # Updated to v6 to clear Node.js runtime warning
         with:
           python-version: '3.11'
 
@@ -34,5 +36,4 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add hillsborough_hvac_contractors.csv
-          git commit -m "Automated update of DBPR contractor CSV data" || echo "No changes detected"
-          git push
+          git diff --staged --quiet || (git commit -m "Automated update of DBPR contractor CSV data" && git push)
