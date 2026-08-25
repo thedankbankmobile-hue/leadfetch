@@ -28,17 +28,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run DBPR Bulk Data Scraper
+      - name: Run DBPR Scraper
         run: python scraper.py
 
-      - name: Commit and push generated CSV
+      - name: Force Commit and Push CSV
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          if [ -f hillsborough_hvac_contractors.csv ]; then
-            git add hillsborough_hvac_contractors.csv
-            git diff --staged --quiet || (git commit -m "Automated update of DBPR contractor CSV data" && git push)
-          else
-            echo "CSV file missing. Skipping commit."
-          fi
+          git add -A
+          git commit -m "Automated update of DBPR contractor CSV data [skip ci]" || echo "No changes to commit"
+          git push origin main || git push
