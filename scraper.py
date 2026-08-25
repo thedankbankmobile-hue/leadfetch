@@ -1,55 +1,60 @@
 import csv
 import time
-from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
 def scrape_dbpr():
-    print("Launching headless browser to bypass DBPR blocks...")
+    print("Starting Playwright browser...")
     results = []
 
     with sync_playwright() as p:
+        # Launch Chromium headless browser
         browser = p.chromium.launch(headless=True)
-        # Emulate a real desktop browser window
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
         page = context.new_page()
 
         try:
-            # Step 1: Navigate to the DBPR License Search page
-            print("Navigating to DBPR portal...")
-            page.goto("https://www.myfloridalicense.com/wl11.asp?mode=0&SID=", timeout=30000)
-            page.wait_for_selector("select[name='Board']", timeout=10000)
+            # Direct search URL for DBPR Board/Category searches
+            search_url = "https://www.myfloridalicense.com/wl11.asp?mode=1&SID="
+            print(f"Navigating to DBPR portal: {search_url}")
+            page.goto(search_url, wait_until="networkidle", timeout=60000)
 
-            # Step 2: Select Form Inputs
-            # Board 06 = Construction Industry Licensing Board
-            page.select_option("select[name='Board']", "06")
+            # Wait for form select elements to load
+            page.wait_for_selector("form", timeout=15000)
+
+            # Select Board (06 = Construction Industry Licensing Board)
+            page.select_option("select[name='Board']", value="06")
             time.sleep(1)
 
-            # License Type CAC = Certified Air Conditioning Contractor
-            page.select_option("select[name='LicenseType']", "CAC")
-            
-            # County 39 = Hillsborough County
-            page.select_option("select[name='County']", "39")
-            
-            # Active Licenses
-            page.select_option("select[name='Status']", "ACT")
+            # Select License Type (CAC = Certified Air Conditioning Contractor)
+            if page.locator("select[name='LicenseType']").count() > 0:
+                page.select_option("select[name='LicenseType']", value="CAC")
 
-            # Step 3: Submit Form
-            print("Submitting search form...")
-            page.click("input[type='submit'][name='Search']")
-            page.wait_for_load_state("networkidle", timeout=30000)
+            # Select County (39 = Hillsborough County)
+            if page.locator("select[name='County']").count() > 0:
+                page.select_option("select[name='County']", value="39")
 
-            # Step 4: Extract Content
-            content = page.content()
-            soup = BeautifulSoup(content, 'html.parser')
+            # Click Submit button
+            print("Submitting search parameters...")
+            submit_button = page.locator("input[type='submit'][value='Search'], input[type='submit'][name='Search']").first
+            submit_button.click()
+
+            # Wait for results table to load
+            page.wait_for_selector("table", timeout=30000)
+            time.sleep(3)
+
+            # Extract data from the page
+            soup = BeautifulSoup(page.content(), 'html.parser')
             rows = soup.find_all('tr')
 
             for row in rows:
                 cols = row.find_all('td')
                 if len(cols) >= 3:
                     text_cols = [c.get_text(strip=True) for c in cols]
-                    if any("CAC" in t or "License" in t for t in text_cols):
+                    # Check if row contains license record patterns
+                    if any("CAC" in t or "Lic" in t for t in text_cols):
                         results.append({
                             "Firm/Name": text_cols[0],
                             "License Number": text_cols[1] if len(text_cols) > 1 else "N/A",
@@ -57,10 +62,10 @@ def scrape_dbpr():
                             "Email": "N/A"
                         })
 
-            print(f"Successfully retrieved {len(results)} contractor records.")
+            print(f"Successfully scraped {len(results)} contractor records.")
 
         except Exception as e:
-            print(f"Scraping error encountered: {e}")
+            print(f"Error during scraping execution: {e}")
         finally:
             browser.close()
 
@@ -68,14 +73,14 @@ def scrape_dbpr():
 
 def save_to_csv(data, filename="hillsborough_hvac_contractors.csv"):
     keys = ["Firm/Name", "License Number", "Phone", "Email"]
-    # Write file regardless of record count so Git can stage it
+    # Write file out regardless of record count so Git recognizes the file path
     with open(filename, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=keys)
         writer.writeheader()
         if data:
             writer.writerows(data)
-    print(f"Wrote output file to {filename}")
+    print(f"File output saved to: {filename}")
 
 if __name__ == "__main__":
-    data = scrape_dbpr()
-    save_to_csv(data)
+    contractors_data = scrape_dbpr()
+    save_to_csv(contractors_data)
