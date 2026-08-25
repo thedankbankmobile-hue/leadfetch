@@ -6,11 +6,10 @@ import zipfile
 import tempfile
 from curl_cffi import requests
 
-# Updated direct HTTPS download endpoints on Sunbiz
+# Florida DOS / Sunbiz Public SFTP Endpoints (including /Public/ root)
 SUNBIZ_ZIP_URLS = [
-    "https://sftp.floridados.gov/doc/quarterly/cor/cordata.zip",
-    "https://sftp.floridados.gov/doc/daily/cordata.zip",
-    "https://sftp.floridados.gov/doc/quarterly/fic/ficdata.zip"
+    "https://sftp.floridados.gov/Public/doc/quarterly/cor/cordata.zip",
+    "https://sftp.floridados.gov/Public/doc/quarterly/fic/ficdata.zip"
 ]
 
 SUNBIZ_USER = "Public"
@@ -35,17 +34,16 @@ def fetch_sunbiz_data():
     for url in SUNBIZ_ZIP_URLS:
         try:
             print(f"Attempting download from: {url}")
-            # Try HTTP Basic Auth first, fall back to standard stream
             response = session.get(
                 url, 
                 auth=(SUNBIZ_USER, SUNBIZ_PASS), 
                 headers=headers,
                 stream=True, 
-                timeout=180
+                timeout=300
             )
             
             if response.status_code == 200:
-                print(f"Connected to {url}. Downloading payload...")
+                print(f"Connected to {url}. Downloading archive payload...")
                 temp_file = tempfile.NamedTemporaryFile(delete=False)
                 bytes_downloaded = 0
                 
@@ -78,15 +76,15 @@ def parse_and_filter_sunbiz(temp_file):
                         line = line_bytes.decode('latin-1', errors='replace')
                         line_upper = line.upper()
                         
-                        # Filter for tree service business keywords
+                        # Filter by tree service keywords
                         if not any(kw in line_upper for kw in TARGET_KEYWORDS):
                             continue
                             
-                        # Filter for Hillsborough County cities
+                        # Filter by Hillsborough County cities
                         if not any(city in line_upper for city in HILLSBOROUGH_CITIES):
                             continue
                         
-                        # Extract email address via regex
+                        # Extract email using regex pattern match
                         email_match = re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', line)
                         email = email_match.group(0) if email_match else "N/A"
                         
