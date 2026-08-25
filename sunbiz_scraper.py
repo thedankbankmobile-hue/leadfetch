@@ -1,139 +1,124 @@
 import csv
-import ftplib
-import io
 import re
 import sys
-import tempfile
+import time
+from bs4 import BeautifulSoup
 from curl_cffi import requests
 
-# Florida DOS / Sunbiz Daily Files (Lightweight)
-# Daily files contain recent entity filings and load in seconds.
-FTP_HOST = "sftp.floridados.gov"
-FTP_USER = "Public"
-FTP_PASS = "PubAccess1845!"
+# Base URLs for Florida Division of Corporations Search
+BASE_URL = "https://search.sunbiz.org"
+SEARCH_URL = f"{BASE_URL}/Search/Corporation/ByName"
 
 HILLSBOROUGH_CITIES = [
     "TAMPA", "BRANDON", "PLANT CITY", "RIVERVIEW", 
     "TEMPLE TERRACE", "VALRICO", "RUSKIN", "APOLLO BEACH", "SEFFNER"
 ]
 
-TARGET_KEYWORDS = ["TREE", "ARBOR", "TIMBER", "LANDCLEARING", "LOGGING"]
+TARGET_TERMS = ["TREE SERVICE", "ARBOR", "TREE CARE", "LAND CLEARING"]
 
-def fetch_daily_sunbiz():
-    """Fetches smaller daily files via standard web endpoints."""
-    print("Attempting fast download of daily Sunbiz filings...")
-    
-    # We target recent daily dumps which process fast
-    urls = [
-        "https://sftp.floridados.gov/Public/doc/cor/cordata.txt", # Smaller uncompressed daily stream
-        "https://sftp.floridados.gov/Public/doc/quarterly/cor/cordata0.zip", # Partition 0 of split archive
-    ]
-    
-    session = requests.Session()
-    headers = {"User-Agent": "Mozilla/5.0"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
 
-    for url in urls:
-        try:
-            print(f"Connecting to: {url}")
-            response = session.get(url, auth=(FTP_USER, FTP_PASS), headers=headers, stream=True, timeout=60)
-            
-            if response.status_code == 200:
-                print("Connection established. Creating temporary buffer...")
-                temp_file = tempfile.NamedTemporaryFile(delete=False)
-                
-                # Stream in 512KB chunks to save RAM
-                for chunk in response.iter_content(chunk_size=512 * 1024):
-                    if chunk:
-                        temp_file.write(chunk)
-                        
-                temp_file.seek(0)
-                print("Download completed successfully!")
-                return temp_file
-            else:
-                print(f"Received HTTP {response.status_code} for {url}")
-        except Exception as e:
-            print(f"Failed to pull {url}: {e}")
-            
-    print("Direct HTTPS downloads timed out or failed. Falling back to FTP protocol...")
-    return fetch_via_ftp()
-
-def fetch_via_ftp():
-    """FTP fallback to bypass web server response limits."""
+def extract_entity_details(detail_url, session):
+    """Fetches the entity detail page to extract contact info and email."""
     try:
-        ftp = ftplib.FTP(FTP_HOST)
-        ftp.login(FTP_USER, FTP_PASS)
-        ftp.cwd('/Public/doc/cor')
+        resp = session.get(detail_url, headers=HEADERS, impersonate="chrome120", timeout=15)
+        if resp.status_code != 200:
+            return "N/A", "N/A"
         
-        filenames = []
-        ftp.retrlines('NLST', filenames.append)
+        soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # Grab the newest file in directory
-        txt_files = [f for f in filenames if f.endswith('.txt')]
-        if not txt_files:
-            print("No text files found in FTP directory.")
-            sys.exit(1)
-            
-        target_file = txt_files[-1]
-        print(f"Downloading active FTP file: {target_file}")
+        # Search raw page HTML for any valid email address pattern
+        email_match = re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', resp.text)
+        email = email_match.group(0) if email_match else "N/A"
         
-        temp_file = tempfile.NamedTemporaryFile(delete=False)
-        ftp.retrbinary(f"RETR {target_file}", temp_file.write)
-        temp_file.seek(0)
-        ftp.quit()
-        return temp_file
+        # Extract Principal/Mailing Address block text
+        addr_section = soup.find('div', class_='detailSection searchResultDetail')
+        address_text = addr_section.get_text(separator=" ").strip() if addr_section else "N/A"
+        
+        return email, address_text
     except Exception as e:
-        print(f"FTP connection failed: {e}")
-        sys.exit(1)
+        print(f"Failed to fetch detail page {detail_url}: {e}")
+        return "N/A", "N/A"
 
-def process_file(temp_file):
-    print("Parsing records for Hillsborough Tree Service leads...")
+def scrape_sunbiz_web():
+    print("Starting direct web search extraction from Sunbiz portal...")
+    session = requests.Session()
     results = []
     
-    with open(temp_file.name, 'r', encoding='latin-1', errors='replace') as f:
-        for line in f:
-            line_upper = line.upper()
-            
-            # Quick filter for keywords
-            if not any(kw in line_upper for kw in TARGET_KEYWORDS):
+    for term in TARGET_TERMS:
+        print(f"\nSearching keyword: '{term}'...")
+        params = {"searchTerm": term}
+        
+        try:
+            response = session.get(SEARCH_URL, params=params, headers=HEADERS, impersonate="chrome120", timeout=20)
+            if response.status_code != 200:
+                print(f"Search query returned HTTP {response.status_code}")
                 continue
                 
-            # Quick filter for Hillsborough location
-            if not any(city in line_upper for city in HILLSBOROUGH_CITIES):
+            soup = BeautifulSoup(response.text, 'html.parser')
+            table = soup.find('table')
+            if not table:
+                print(f"No results table found for query '{term}'.")
                 continue
+                
+            rows = table.find_all('tr')[1:] # Skip table header
             
-            email_match = re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', line)
-            email = email_match.group(0) if email_match else "N/A"
-            
-            doc_num = line[0:12].strip()
-            entity_name = line[12:192].strip() if len(line) >= 192 else line[12:].strip()
-            city_found = next((city for city in HILLSBOROUGH_CITIES if city in line_upper), "HILLSBOROUGH")
-            
-            results.append({
-                "Document Number": doc_num,
-                "Business Name": entity_name,
-                "City": city_found,
-                "Email": email,
-                "Raw Record": line[:250].strip()
-            })
-            
-    return results
+            for row in rows:
+                cols = row.find_all('td')
+                if len(cols) < 3:
+                    continue
+                    
+                entity_name = cols[0].text.strip()
+                doc_num = cols[1].text.strip()
+                status = cols[2].text.strip().upper()
+                
+                # Filter for Active businesses only
+                if "ACT" not in status:
+                    continue
+                    
+                link_tag = cols[0].find('a')
+                if not link_tag or 'href' not in link_tag.attrs:
+                    continue
+                    
+                detail_url = f"{BASE_URL}{link_tag['href']}"
+                
+                # Fetch detailed filing page
+                email, raw_addr = extract_entity_details(detail_url, session)
+                raw_addr_upper = raw_addr.upper()
+                
+                # Filter location for Hillsborough County cities
+                matching_city = next((city for city in HILLSBOROUGH_CITIES if city in raw_addr_upper), None)
+                if matching_city or "HILLSBOROUGH" in raw_addr_upper:
+                    city_label = matching_city if matching_city else "HILLSBOROUGH"
+                    print(f" Found Lead: {entity_name} ({city_label}) | Email: {email}")
+                    
+                    results.append({
+                        "Document Number": doc_num,
+                        "Business Name": entity_name,
+                        "City": city_label,
+                        "Email": email,
+                        "Raw Address": raw_addr[:200].replace('\n', ' ')
+                    })
+                
+                time.sleep(0.5) # Respectful delay
+                
+        except Exception as e:
+            print(f"Error during search execution for '{term}': {e}")
 
-def main():
-    temp_file = fetch_daily_sunbiz()
-    leads = process_file(temp_file)
-    temp_file.close()
-    
-    print(f"\nExtracted {len(leads)} matching records.")
+    print(f"\nFinished processing. Extracted {len(results)} Hillsborough Tree Service leads.")
     
     output_filename = "hillsborough_tree_services_sunbiz.csv"
-    fieldnames = ["Document Number", "Business Name", "City", "Email", "Raw Record"]
+    fieldnames = ["Document Number", "Business Name", "City", "Email", "Raw Address"]
     
     with open(output_filename, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(leads)
+        writer.writerows(results)
         
-    print(f"Saved dataset to {output_filename}")
+    print(f"Saved records to {output_filename}")
 
 if __name__ == "__main__":
-    main()
+    scrape_sunbiz_web()
