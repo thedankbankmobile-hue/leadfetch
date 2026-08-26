@@ -1,68 +1,68 @@
 import csv
 import os
+import random
 import sys
 import time
 from bs4 import BeautifulSoup
-from curl_cffi import requests
+from playwright.sync_api import sync_playwright
 
-# Updated Sunbiz Endpoints
-BASE_URL = "https://search.sunbiz.org"
-SEARCH_URL = f"{BASE_URL}/Inquiry/CorporationSearch/SearchResults"
+SEARCH_ENTRY_URL = "https://search.sunbiz.org/Inquiry/CorporationSearch/ByName"
+
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 INDUSTRY_CONFIG = {
-    "plumbing": {"output_file": "hillsborough_plumbing_sunbiz.csv", "terms": ["PLUMBING", "PLUMBER"]},
-    "hvac": {"output_file": "hillsborough_hvac_sunbiz.csv", "terms": ["HVAC", "AIR CONDITION"]},
-    "construction": {"output_file": "hillsborough_construction_sunbiz.csv", "terms": ["CONSTRUCTION", "CONTRACTOR"]},
-    "landscape": {"output_file": "hillsborough_landscape_sunbiz.csv", "terms": ["LANDSCAPE", "TREE SERVICE"]},
-    "roofing": {"output_file": "hillsborough_roofing_sunbiz.csv", "terms": ["ROOFING", "ROOFER"]},
-    "dental": {"output_file": "hillsborough_dental_sunbiz.csv", "terms": ["DENTAL", "DENTISTRY"]},
+    "plumbing": {"output_file": os.path.join(OUTPUT_DIR, "hillsborough_plumbing_sunbiz.csv"), "terms": ["PLUMBING", "PLUMBER"]},
+    "hvac": {"output_file": os.path.join(OUTPUT_DIR, "hillsborough_hvac_sunbiz.csv"), "terms": ["HVAC", "AIR CONDITION"]},
+    "construction": {"output_file": os.path.join(OUTPUT_DIR, "hillsborough_construction_sunbiz.csv"), "terms": ["CONSTRUCTION", "CONTRACTOR"]},
+    "landscape": {"output_file": os.path.join(OUTPUT_DIR, "hillsborough_landscape_sunbiz.csv"), "terms": ["LANDSCAPE", "TREE SERVICE"]},
+    "roofing": {"output_file": os.path.join(OUTPUT_DIR, "hillsborough_roofing_sunbiz.csv"), "terms": ["ROOFING", "ROOFER"]},
+    "electrical": {"output_file": os.path.join(OUTPUT_DIR, "hillsborough_electrical_sunbiz.csv"), "terms": ["ELECTRIC", "ELECTRICAL"]},
 }
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-}
-
-def scrape_industry(industry_key):
+def scrape_industry_form(p, industry_key):
     if industry_key not in INDUSTRY_CONFIG:
         print(f"[!] Unknown industry: '{industry_key}'.")
         return
 
     config = INDUSTRY_CONFIG[industry_key]
     print(f"\n==========================================")
-    print(f"RUNNING DIRECT TABLE SCRAPER FOR: {industry_key.upper()}")
+    print(f"SCRAPING WITH PLAYWRIGHT FORM ACTION: {industry_key.upper()}")
     print(f"==========================================")
 
-    session = requests.Session()
+    browser = p.chromium.launch(headless=True)
+    context = browser.new_context(
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+        viewport={"width": 1280, "height": 800}
+    )
+    page = context.new_page()
+
     results = []
     seen_docs = set()
 
     for term in config["terms"]:
         print(f"[+] Searching query: '{term}'...")
-        params = {
-            'searchTerm': term,
-            'searchType': 'EntityName'
-        }
 
         try:
-            # Fetch the main search results page
-            response = session.get(SEARCH_URL, params=params, headers=HEADERS, impersonate="chrome120", timeout=20)
+            # 1. Navigate to main search entry page
+            page.goto(SEARCH_ENTRY_URL, wait_until="networkidle", timeout=30000)
             
-            # Detect Cloudflare or Bot Protection Blocks
-            if "Cloudflare" in response.text or "Security Check" in response.text:
-                 print("    [!] WARNING: GitHub IP blocked by Cloudflare/Bot Protection. Scraping failed.")
-                 continue
-                 
-            soup = BeautifulSoup(response.text, 'html.parser')
+            # 2. Fill search field and click search
+            search_input = page.locator("#SearchTerm")
+            search_input.fill(term)
             
-            # Find the main data table
-            table = soup.find('table')
-            if not table:
-                print(f"    -> HTTP Status {response.status_code}. No data table found in HTML.")
-                continue
+            # Submit form
+            page.locator("input[type='submit'][value='Search Now']").click()
+            page.wait_for_load_state("networkidle")
 
-            rows = table.find_all('tr')[1:]  # Skip the header row
-            print(f"    -> Found {len(rows)} potential entity rows.")
+            time.sleep(random.uniform(1.5, 3.0))
+
+            # 3. Parse rendered table HTML
+            html_content = page.content()
+            soup = BeautifulSoup(html_content, 'html.parser')
+
+            rows = soup.find_all('tr')
+            valid_rows = 0
 
             for row in rows:
                 cols = row.find_all('td')
@@ -70,15 +70,15 @@ def scrape_industry(industry_key):
                     entity_name = cols[0].text.strip()
                     doc_number = cols[1].text.strip()
                     status = cols[2].text.strip()
+
+                    if "Corporate Name" in entity_name or "Document Number" in doc_number:
+                        continue
                     
-                    # Prevent duplicates across search terms
                     if doc_number in seen_docs:
-                         continue
+                        continue
                     seen_docs.add(doc_number)
 
-                    print(f"  [+] Match: {entity_name} | {doc_number}")
-
-                    # We save the baseline data directly from the search table
+                    valid_rows += 1
                     results.append({
                         "Document Number": doc_number,
                         "Business Name": entity_name,
@@ -86,26 +86,29 @@ def scrape_industry(industry_key):
                         "Industry Segment": industry_key.upper()
                     })
 
-            time.sleep(2) # Throttle to prevent immediate IP bans
+            print(f"    -> Extracted {valid_rows} unique records for '{term}'.")
 
         except Exception as e:
-            print(f"[ERROR] Executing search '{term}': {e}")
+            print(f"[ERROR] Fetching '{term}': {e}")
 
-    output_filename = config["output_file"]
+    browser.close()
+
+    output_filepath = config["output_file"]
     fieldnames = ["Document Number", "Business Name", "Status", "Industry Segment"]
 
-    with open(output_filename, "w", newline="", encoding="utf-8") as f:
+    with open(output_filepath, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(results)
 
-    print(f"\n[SUMMARY] Finished {industry_key.upper()}: Saved {len(results)} records to {output_filename}")
+    print(f"[SUMMARY] Finished {industry_key.upper()}: Saved {len(results)} records to {output_filepath}")
 
 if __name__ == "__main__":
-    target = sys.argv[1].lower() if len(sys.argv) > 1 else "all"
-    
-    if target == "all":
-        for ind in INDUSTRY_CONFIG.keys():
-            scrape_industry(ind)
-    else:
-        scrape_industry(target)
+    target = sys.argv[1].lower() if len(sys.argv) > 1 else "roofing"
+
+    with sync_playwright() as p:
+        if target == "all":
+            for ind in INDUSTRY_CONFIG.keys():
+                scrape_industry_form(p, ind)
+        else:
+            scrape_industry_form(p, target)
