@@ -1,0 +1,2 @@
+# Prevent credentials file from being committed
+credentials.json
