@@ -1,75 +1,15 @@
-name: Multi-Industry Sunbiz Scraper
-
-on:
-  workflow_dispatch:
-    inputs:
-      target_industry:
-        description: 'Industry to scrape (or "all")'
-        required: true
-        default: 'all'
-        type: choice
-        options:
-          - all
-          - plumbing
-          - hvac
-          - construction
-          - landscape
-          - roofing
-          - dental
-          - electrical
-          - pest_control
-          - cleaning
-          - auto_repair
-          - painting
-          - pool_services
-          - moving_storage
-          - chiro_pt
-          - veterinary
-          - solar
-          - towing
-          - accounting_cpa
-  schedule:
-    - cron: '0 6 * * 1' # Runs every Monday at 6:00 AM UTC
-
-jobs:
-  run-scraper:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests curl_cffi beautifulsoup4 google-api-python-client google-auth-httplib2 google-auth-oauthlib
-
-      - name: Create credentials.json from GitHub Secret
-        run: |
-          echo "$GDRIVE_KEY" > credentials.json
-        env:
-          GDRIVE_KEY: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_KEY }}
-
-      - name: Run Multi-Industry Scraper
-        run: |
-          TARGET="${{ github.event.inputs.target_industry }}"
-          if [ -z "$TARGET" ]; then
-            TARGET="all"
-          fi
-          python multi_industry_scraper.py $TARGET
-
-      - name: Securely Remove Credentials File
-        if: always()
-        run: rm -f credentials.json
-
-      - name: Commit and Push Results locally
+- name: Commit and Push Results
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Stage only CSV files
           git add *.csv
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update multi-industry Sunbiz CSV datasets" && git push)
+          
+          # Check ONLY staged files for changes before committing
+          if ! git diff --staged --quiet; then
+            git commit -m "Update multi-industry Sunbiz CSV datasets"
+            git push
+          else
+            echo "No CSV changes to commit."
+          fi
