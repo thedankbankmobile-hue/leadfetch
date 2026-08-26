@@ -1,0 +1,15 @@
+- name: Commit and Push Results
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Stage only CSV files
+          git add *.csv
+          
+          # Check ONLY staged files for changes before committing
+          if ! git diff --staged --quiet; then
+            git commit -m "Update multi-industry Sunbiz CSV datasets"
+            git push
+          else
+            echo "No CSV changes to commit."
+          fi
