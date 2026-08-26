@@ -1,196 +1,146 @@
-import csv
 import os
-import re
-import sys
+import csv
 import time
+import requests
 from bs4 import BeautifulSoup
-from curl_cffi import requests
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 
-BASE_URL = "https://search.sunbiz.org"
-SEARCH_URL = f"{BASE_URL}/Search/Corporation/ByName"
+# ==========================================
+# CONFIGURATION
+# ==========================================
+# Google Drive Settings
+TARGET_FOLDER_ID = 'YOUR_TARGET_FOLDER_ID_HERE'
+SERVICE_ACCOUNT_FILE = 'credentials.json'  # Path to Service Account JSON key
 
-HILLSBOROUGH_CITIES = [
-    "TAMPA", "BRANDON", "PLANT CITY", "RIVERVIEW", 
-    "TEMPLE TERRACE", "VALRICO", "RUSKIN", "APOLLO BEACH", 
-    "SEFFNER", "LUTZ", "GIBSONTON", "WIMAUMA", "THONOTOSASSA"
+# Sunbiz Multi-Search Targets
+INDUSTRIES = [
+    'HVAC',
+    'PLUMBING',
+    'ROOFING',
+    'TREE SERVICE',
+    'LANDSCAPING',
+    'DENTAL'
 ]
 
-# Map of target industries to search terms
-INDUSTRY_CONFIG = {
-    "plumbing": {
-        "output_file": "hillsborough_plumbing_sunbiz.csv",
-        "terms": ["PLUMBING", "PLUMBER", "DRAIN", "ROOTER"]
-    },
-    "hvac": {
-        "output_file": "hillsborough_hvac_sunbiz.csv",
-        "terms": ["HVAC", "AIR CONDITION", "HEATING AND AIR", "COOLING"]
-    },
-    "construction": {
-        "output_file": "hillsborough_construction_sunbiz.csv",
-        "terms": ["CONSTRUCTION", "BUILDERS", "CONTRACTOR", "REMODELING"]
-    },
-    "landscape": {
-        "output_file": "hillsborough_landscape_sunbiz.csv",
-        "terms": ["LANDSCAPE", "LANDSCAPING", "LAWN CARE", "TREE SERVICE", "IRRIGATION"]
-    },
-    "roofing": {
-        "output_file": "hillsborough_roofing_sunbiz.csv",
-        "terms": ["ROOFING", "ROOFER", "ROOF REPAIR"]
-    },
-    "dental": {
-        "output_file": "hillsborough_dental_sunbiz.csv",
-        "terms": ["DENTAL", "DENTISTRY", "DENTIST", "ORTHODONTICS"]
-    },
-    # Additional High-Value Service-Based Industries
-    "electrical": {
-        "output_file": "hillsborough_electrical_sunbiz.csv",
-        "terms": ["ELECTRIC", "ELECTRICAL", "ELECTRICIAN"]
-    },
-    "pest_control": {
-        "output_file": "hillsborough_pest_control_sunbiz.csv",
-        "terms": ["PEST CONTROL", "EXTERMINATING", "TERMITE"]
-    },
-    "cleaning": {
-        "output_file": "hillsborough_cleaning_sunbiz.csv",
-        "terms": ["CLEANING", "JANITORIAL", "PRESSURE WASHING", "MAID SERVICE"]
-    },
-    "auto_repair": {
-        "output_file": "hillsborough_auto_repair_sunbiz.csv",
-        "terms": ["AUTO REPAIR", "AUTOMOTIVE", "COLLISION", "BODY SHOP", "MECHANIC"]
-    },
-    "painting": {
-        "output_file": "hillsborough_painting_sunbiz.csv",
-        "terms": ["PAINTING", "PAINTER", "COATINGS"]
-    },
-    "pool_services": {
-        "output_file": "hillsborough_pool_services_sunbiz.csv",
-        "terms": ["POOL SERVICE", "POOL CARE", "POOLS"]
-    },
-    "moving_storage": {
-        "output_file": "hillsborough_moving_storage_sunbiz.csv",
-        "terms": ["MOVING", "MOVERS", "STORAGE"]
-    },
-    "chiro_pt": {
-        "output_file": "hillsborough_chiro_pt_sunbiz.csv",
-        "terms": ["CHIROPRACTIC", "CHIROPRACTOR", "PHYSICAL THERAPY"]
-    },
-    "veterinary": {
-        "output_file": "hillsborough_veterinary_sunbiz.csv",
-        "terms": ["VETERINARY", "ANIMAL HOSPITAL", "PET CARE"]
-    },
-    "solar": {
-        "output_file": "hillsborough_solar_sunbiz.csv",
-        "terms": ["SOLAR", "SOLAR ENERGY", "GREEN ENERGY"]
-    },
-    "towing": {
-        "output_file": "hillsborough_towing_sunbiz.csv",
-        "terms": ["TOWING", "RECOVERY", "WRECKER"]
-    },
-    "accounting_cpa": {
-        "output_file": "hillsborough_accounting_sunbiz.csv",
-        "terms": ["ACCOUNTING", "CPA", "BOOKKEEPING", "TAX SERVICE"]
+OUTPUT_FILENAME = 'sunbiz_service_firms_leads.csv'
+
+# ==========================================
+# 1. GOOGLE DRIVE UPLOAD FUNCTION
+# ==========================================
+def upload_to_google_drive(file_path, folder_id, credentials_path):
+    """Uploads local file directly to specified Google Drive folder."""
+    print(f"\n[+] Connecting to Google Drive API...")
+    
+    scopes = ['https://www.googleapis.com/auth/drive.file']
+    creds = Credentials.from_service_account_file(credentials_path, scopes=scopes)
+    drive_service = build('drive', 'v3', credentials=creds)
+
+    file_metadata = {
+        'name': os.path.basename(file_path),
+        'parents': [folder_id]
     }
-}
+    media = MediaFileUpload(file_path, mimetype='text/csv', resumable=True)
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-}
+    print(f"[+] Uploading {file_path} to Folder ID: {folder_id}...")
+    uploaded_file = drive_service.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields='id'
+    ).execute()
 
-def extract_entity_details(detail_url, session):
-    """Fetches target entity detail page for address and email regex match."""
-    try:
-        resp = session.get(detail_url, headers=HEADERS, impersonate="chrome120", timeout=15)
-        if resp.status_code != 200:
-            return "N/A", "N/A"
+    print(f"[SUCCESS] Upload complete! Drive File ID: {uploaded_file.get('id')}")
+
+# ==========================================
+# 2. SUNBIZ MULTI-SEARCH SCRAPER
+# ==========================================
+def scrape_sunbiz_multi_search(industries):
+    """Searches Sunbiz across multiple industries and compiles results."""
+    base_url = "https://search.sunbiz.org/Inquiry/CorporationSearch/SearchResults"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+
+    all_leads = []
+
+    for industry in industries:
+        print(f"[+] Scraping Sunbiz for industry: {industry}...")
         
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        
-        email_match = re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', resp.text)
-        email = email_match.group(0) if email_match else "N/A"
-        
-        addr_sections = soup.find_all('div', class_=re.compile(r'detailSection|searchResultDetail'))
-        address_text = " ".join([sec.get_text(separator=" ").strip() for sec in addr_sections]) if addr_sections else soup.get_text()
-        
-        return email, address_text
-    except Exception as e:
-        return "N/A", "N/A"
-
-def scrape_industry(industry_key):
-    if industry_key not in INDUSTRY_CONFIG:
-        print(f"Unknown industry: '{industry_key}'. Available: {list(INDUSTRY_CONFIG.keys())}")
-        return
-
-    config = INDUSTRY_CONFIG[industry_key]
-    print(f"\n==========================================")
-    print(f"RUNNING SCRAPER FOR: {industry_key.upper()}")
-    print(f"==========================================")
-
-    session = requests.Session()
-    results = []
-    seen_docs = set()
-
-    for term in config["terms"]:
-        print(f"Searching query: '{term}'...")
-        params = {"searchTerm": term}
+        # Query Sunbiz search endpoint
+        params = {
+            'searchTerm': industry,
+            'searchType': 'EntityName'
+        }
 
         try:
-            response = session.get(SEARCH_URL, params=params, headers=HEADERS, impersonate="chrome120", timeout=20)
+            response = requests.get(base_url, params=params, headers=headers, timeout=15)
             if response.status_code != 200:
+                print(f"[!] Server returned status {response.status_code} for {industry}. Skipping...")
                 continue
 
             soup = BeautifulSoup(response.text, 'html.parser')
-            detail_links = soup.find_all('a', href=re.compile(r'/Search/Corporation/SearchResultDetail'))
+            table = soup.find('table')
 
-            for link_tag in detail_links:
-                entity_name = link_tag.text.strip()
-                href = link_tag['href']
+            if not table:
+                print(f"[!] No table found for {industry}.")
+                continue
 
-                doc_match = re.search(r'corDetail\?inquiryNumber=([A-Z0-9]+)', href)
-                doc_num = doc_match.group(1) if doc_match else "N/A"
+            rows = table.find_all('tr')[1:]  # Skip table header
+            count = 0
 
-                if doc_num in seen_docs:
-                    continue
-                seen_docs.add(doc_num)
+            for row in rows:
+                cols = row.find_all('td')
+                if len(cols) >= 3:
+                    entity_name = cols[0].text.strip()
+                    doc_number = cols[1].text.strip()
+                    status = cols[2].text.strip()
 
-                detail_url = f"{BASE_URL}{href}" if href.startswith('/') else href
-                email, raw_addr = extract_entity_details(detail_url, session)
-                raw_addr_upper = raw_addr.upper()
-
-                matching_city = next((city for city in HILLSBOROUGH_CITIES if city in raw_addr_upper), None)
-
-                if matching_city or "HILLSBOROUGH" in raw_addr_upper or any(city in entity_name.upper() for city in HILLSBOROUGH_CITIES):
-                    city_label = matching_city if matching_city else "HILLSBOROUGH"
-                    print(f"  [+] Match: {entity_name} ({city_label}) | {email}")
-
-                    results.append({
-                        "Document Number": doc_num,
-                        "Business Name": entity_name,
-                        "City": city_label,
-                        "Email": email,
-                        "Raw Address": raw_addr[:200].replace('\n', ' ')
+                    all_leads.append({
+                        'Industry_Search': industry,
+                        'Entity_Name': entity_name,
+                        'Document_Number': doc_number,
+                        'Status': status
                     })
+                    count += 1
 
-                time.sleep(0.2)
+            print(f"[+] Extracted {count} records for {industry}.")
 
         except Exception as e:
-            print(f"Error executing search '{term}': {e}")
+            print(f"[ERROR] Failed searching {industry}: {e}")
 
-    output_filename = config["output_file"]
-    fieldnames = ["Document Number", "Business Name", "City", "Email", "Raw Address"]
+        # Pause between queries to prevent IP throttling
+        time.sleep(2)
 
-    with open(output_filename, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+    return all_leads
+
+# ==========================================
+# 3. MAIN PIPELINE EXECUTION
+# ==========================================
+def main():
+    # Step A: Scrape leads
+    leads = scrape_sunbiz_multi_search(INDUSTRIES)
+
+    if not leads:
+        print("[!] No leads gathered. Aborting file upload.")
+        return
+
+    # Step B: Save locally to CSV
+    print(f"\n[+] Writing {len(leads)} leads to {OUTPUT_FILENAME}...")
+    fieldnames = ['Industry_Search', 'Entity_Name', 'Document_Number', 'Status']
+    
+    with open(OUTPUT_FILENAME, mode='w', newline='', encoding='utf-8') as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(results)
+        writer.writerows(leads)
 
-    print(f"Finished {industry_key.upper()}: Saved {len(results)} records to {output_filename}")
+    print("[+] Local CSV saved successfully.")
+
+    # Step C: Upload directly to Google Drive folder
+    try:
+        upload_to_google_drive(OUTPUT_FILENAME, TARGET_FOLDER_ID, SERVICE_ACCOUNT_FILE)
+    except Exception as e:
+        print(f"[ERROR] Google Drive upload failed: {e}")
 
 if __name__ == "__main__":
-    target = sys.argv[1].lower() if len(sys.argv) > 1 else "all"
-    
-    if target == "all":
-        for ind in INDUSTRY_CONFIG.keys():
-            scrape_industry(ind)
-    else:
-        scrape_industry(target)
+    main()
